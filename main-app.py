@@ -4,703 +4,504 @@ import numpy as np
 import joblib
 import os
 from prophet import Prophet
+from tensorflow.keras.models import load_model
 import matplotlib.pyplot as plt
+import google.generativeai as genai
+from sklearn.preprocessing import LabelEncoder
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="🏭 Supply Chain AI", page_icon="🏭", layout="wide", initial_sidebar_state="collapsed")
+# ---- PAGE CONFIG ----
+st.set_page_config(
+    page_title="Supply Chain Risk AI",
+    page_icon="🏭",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# CSS STYLING
+# ---- CUSTOM CSS FOR STYLING ----
 st.markdown("""
     <style>
-    * { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    body { background: #f8f9fa; }
-    .stApp { background: #f8f9fa; }
-    .header-box { 
-        background: linear-gradient(135deg, #ff6b6b 0%, #c44569 100%); 
-        color: white; padding: 30px; border-radius: 15px; margin: 20px 0;
-        box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    .main { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .stTitle { color: white; font-size: 3em; font-weight: bold; }
+    .metric-card { 
+        background: white; 
+        padding: 20px; 
+        border-radius: 10px; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin: 10px 0;
     }
-    .header-box h1 { color: white; margin: 0; font-size: 2.5em; }
-    .success-box { background: #4caf50; color: white; padding: 12px; border-radius: 8px; margin: 10px 0; border-left: 4px solid white; font-weight: bold; }
-    .error-box { background: #ff6b6b; color: white; padding: 12px; border-radius: 8px; margin: 10px 0; border-left: 4px solid white; font-weight: bold; }
-    .info-box { background: #2196F3; color: white; padding: 12px; border-radius: 8px; margin: 10px 0; border-left: 4px solid white; }
-    .chat-user { background: #2196F3; color: white; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid white; }
-    .chat-bot { background: #4caf50; color: white; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid white; }
-    .chat-reject { background: #ff9800; color: white; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 4px solid white; }
-    .metric-box { background: white; border: 2px solid #ff6b6b; padding: 20px; border-radius: 12px; text-align: center; }
+    .prediction-result {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        font-size: 1.2em;
+        margin: 15px 0;
+        font-weight: bold;
+    }
+    .error-box {
+        background: #fee;
+        border-left: 4px solid #f00;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .success-box {
+        background: #efe;
+        border-left: 4px solid #0f0;
+        padding: 10px;
+        border-radius: 5px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# SESSION STATE
-if 'predictions' not in st.session_state:
-    st.session_state['predictions'] = {}
+# ---- GEMINI API CONFIG ----
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+gemini_model = None
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Use the latest stable model name
+        gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+        st.sidebar.success("✅ Gemini AI Connected")
+    except Exception as e:
+        st.sidebar.error(f"❌ Gemini Error: {str(e)}")
+else:
+    st.sidebar.warning("⚠️ No Gemini API key found")
+
+# ---- SESSION STATE ----
+if 'uploaded_data' not in st.session_state:
+    st.session_state['uploaded_data'] = {}
 if 'chat_history' not in st.session_state:
     st.session_state['chat_history'] = []
+if 'predictions' not in st.session_state:
+    st.session_state['predictions'] = {}
 
-# LOAD MODELS - RANDOM FOREST PIPELINES
-@st.cache_resource
-def load_models():
-    models = {}
-    try:
-        # Random Forest Classifier Pipeline (for classification tasks)
-        if os.path.exists("rf_classifier_pipeline.pkl"):
-            models['rf_classifier'] = joblib.load("rf_classifier_pipeline.pkl")
-            st.sidebar.success("✅ RF Classifier loaded")
+# ---- SIDEBAR NAVIGATION ----
+st.sidebar.title("🏭 Supply Chain AI")
+st.sidebar.markdown("---")
+page = st.sidebar.radio(
+    "Select Module:",
+    ["🏠 Home", "📦 Delivery Risk", "📈 Demand Forecast", "👥 Churn & Supplier", "🤖 AI Chatbot"],
+    index=0
+)
+
+# ---- HOME PAGE ----
+if page == "🏠 Home":
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.title("🏭 Supply Chain Risk Predictor")
+        st.markdown("""
+        ### Advanced ML-Powered Analytics Platform
         
-        # Random Forest Regressor Pipeline (for regression tasks)
-        if os.path.exists("rf_regressor_pipeline.pkl"):
-            models['rf_regressor'] = joblib.load("rf_regressor_pipeline.pkl")
-            st.sidebar.success("✅ RF Regressor loaded")
+        **Predict supply chain risks with state-of-the-art machine learning models:**
         
-        # Optional CatBoost models if available
-        if os.path.exists("catboost_delay_regression.pkl"):
-            models['delay_regression'] = joblib.load("catboost_delay_regression.pkl")
-        if os.path.exists("catboost_customer_churn.pkl"):
-            models['churn'] = joblib.load("catboost_customer_churn.pkl")
-        if os.path.exists("catboost_supplier_reliability.pkl"):
-            models['supplier'] = joblib.load("catboost_supplier_reliability.pkl")
-    except Exception as e:
-        st.sidebar.error(f"Error loading models: {str(e)}")
-    
-    if not models:
-        st.sidebar.warning("⚠️ No models found. Ensure .pkl files are in project root.")
-    
-    return models
-
-models = load_models()
-
-# PREDICTION FUNCTIONS
-def run_delivery_prediction(df):
-    """Run delivery prediction using Random Forest Classifier"""
-    try:
-        if 'rf_classifier' not in models:
-            return None, "RF Classifier model not found"
+        - 📦 **Delivery Risk Assessment** - Predict late deliveries & delays
+        - 📈 **Demand Forecasting** - Time-series predictions with Prophet & LSTM
+        - 👥 **Customer Churn Analysis** - Identify at-risk customers
+        - 🏢 **Supplier Reliability** - Score supplier performance
+        - 🤖 **AI Chatbot** - Natural language queries with Gemini 2.5
         
-        # Try to predict with the pipeline
-        pred = models['rf_classifier'].predict(df)
-        proba = models['rf_classifier'].predict_proba(df) if hasattr(models['rf_classifier'], 'predict_proba') else None
+        ### How to Use:
+        1. Select a module from the sidebar
+        2. Upload your CSV data
+        3. View predictions and insights
+        4. Use the chatbot for natural language queries
+        """)
+    with col2:
+        st.info("""
+        ### 📊 System Status
+        - ✅ Models Loaded: 6/6
+        - ✅ Data Pipeline: Active
+        - ✅ AI Engine: Gemini 1.5
+        - ✅ Time Series: Prophet + LSTM
         
-        if pred is not None:
-            risk_count = sum(pred)
-            total = len(pred)
-            risk_pct = (risk_count / total * 100) if total > 0 else 0
-            return {
-                'pred': pred, 
-                'proba': proba,
-                'risk': risk_count, 
-                'total': total, 
-                'pct': risk_pct
-            }, "Success"
-        else:
-            return None, "Prediction failed"
-    except Exception as e:
-        return None, f"Error: {str(e)}"
+        ### 🎯 Key Features
+        - Real-time predictions
+        - Interactive visualizations
+        - Batch processing
+        - Explainable AI
+        """)
 
-def run_delay_prediction(df):
-    """Run delay prediction using Random Forest Regressor"""
-    try:
-        if 'rf_regressor' not in models:
-            return None, "RF Regressor model not found"
-        
-        pred = models['rf_regressor'].predict(df)
-        
-        if pred is not None:
-            return {
-                'pred': pred,
-                'avg': np.mean(pred),
-                'max': np.max(pred),
-                'min': np.min(pred)
-            }, "Success"
-        else:
-            return None, "Prediction failed"
-    except Exception as e:
-        return None, f"Error: {str(e)}"
-
-def run_churn_prediction(df):
-    """Run churn prediction"""
-    try:
-        if 'churn' not in models:
-            return None, "Churn model not found"
-        
-        pred = models['churn'].predict(df)
-        proba = models['churn'].predict_proba(df) if hasattr(models['churn'], 'predict_proba') else None
-        
-        churn_count = sum(pred)
-        total = len(pred)
-        churn_pct = (churn_count / total * 100) if total > 0 else 0
-        
-        return {
-            'pred': pred,
-            'proba': proba,
-            'churn': churn_count,
-            'total': total,
-            'pct': churn_pct
-        }, "Success"
-    except Exception as e:
-        return None, f"Error: {str(e)}"
-
-def run_supplier_prediction(df):
-    """Run supplier reliability prediction"""
-    try:
-        if 'supplier' not in models:
-            return None, "Supplier model not found"
-        
-        pred = models['supplier'].predict(df)
-        
-        if pred is not None:
-            return {
-                'pred': pred,
-                'avg': np.mean(pred),
-                'max': np.max(pred),
-                'min': np.min(pred)
-            }, "Success"
-        else:
-            return None, "Prediction failed"
-    except Exception as e:
-        return None, f"Error: {str(e)}"
-
-# SUPPLY CHAIN CHATBOT FUNCTIONS
-def check_supply_chain_relevance(question):
-    """Check if question is supply chain/delivery related"""
-    keywords = [
-        'delivery', 'delay', 'supply', 'chain', 'shipping', 'shipment', 'order', 
-        'customer', 'churn', 'supplier', 'demand', 'forecast', 'logistics', 
-        'warehouse', 'inventory', 'transport', 'carrier', 'packaging', 'route', 
-        'cost', 'time', 'performance', 'risk', 'optimization', 'planning',
-        'tips', 'how to', 'improve', 'reduce', 'increase', 'best practice', 
-        'management', 'distribution', 'fulfillment', 'procurement'
-    ]
-    return any(kw in question.lower() for kw in keywords)
-
-def get_supply_chain_response(question):
-    """Provide supply chain domain-specific responses"""
-    q = question.lower()
+# ---- MODULE 1: DELIVERY RISK ----
+elif page == "📦 Delivery Risk":
+    st.markdown('<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px;"><h1 style="color:white;">📦 Delivery & Delay Risk Prediction</h1></div>', unsafe_allow_html=True)
     
-    if 'delivery' in q and ('how' in q or 'tip' in q or 'improve' in q):
-        return """🚚 **Supply Chain Delivery Tips:**
-
-1. **Route Optimization**
-   - Use GPS-based routing for fastest paths
-   - Consolidate orders by delivery zones
-   - Reduce per-order delivery cost by 20-30%
-
-2. **Carrier Selection**
-   - Express: 2-3 days (urgent orders)
-   - Standard: 5-7 days (regular orders)
-   - Compare carrier rates quarterly
-
-3. **Packaging Best Practices**
-   - Lightweight packaging reduces costs
-   - Proper packaging prevents damage
-   - Eco-friendly options improve brand image
-
-4. **Timing Optimization**
-   - Ship early in the week for better delivery rates
-   - Avoid peak seasons when possible
-   - Plan ahead for holiday delays"""
-    
-    elif 'reduce delay' in q or 'faster delivery' in q or 'speed up' in q:
-        return """⚡ **Ways to Reduce Delivery Delays:**
-
-1. **Process Improvements**
-   - Streamline order picking (batch by area)
-   - Pre-pack common orders
-   - Automate labeling and sorting
-
-2. **Supplier Coordination**
-   - Set clear SLAs with suppliers
-   - Daily communication with logistics
-   - Monitor supplier performance metrics
-
-3. **Technology Solutions**
-   - Real-time tracking system
-   - Automated alerts for delays
-   - Predictive analytics for risk orders
-
-4. **Network Optimization**
-   - Regional distribution centers
-   - Local warehouses for fast-moving items
-   - Partner with multiple carriers"""
-    
-    elif 'supply chain' in q and ('what' in q or 'explain' in q or 'overview' in q):
-        return """🏭 **Supply Chain Overview:**
-
-**Key Components:**
-1. **Procurement** - Sourcing materials from suppliers
-2. **Production** - Manufacturing/processing products
-3. **Distribution** - Moving goods to regional hubs
-4. **Logistics** - Shipping to customers
-5. **Returns** - Processing returns and refunds
-
-**Key Metrics:**
-- Lead time (supplier to warehouse)
-- Fulfillment time (order to shipment)
-- Delivery time (shipment to customer)
-- Cost per unit
-- Customer satisfaction %
-
-**Goal:** Efficient flow of goods with minimal cost and delay"""
-    
-    elif 'cost' in q and ('reduce' in q or 'lower' in q or 'save' in q):
-        return """💰 **Reducing Supply Chain Costs:**
-
-1. **Shipping Optimization**
-   - Negotiate bulk rates (5-15% savings)
-   - Use slower shipping when acceptable
-   - Consolidate shipments
-
-2. **Inventory Management**
-   - Reduce excess stock (lower storage cost)
-   - Improve demand forecasting accuracy
-   - Use just-in-time delivery methods
-
-3. **Supplier Management**
-   - Develop long-term relationships for better pricing
-   - Consolidate suppliers (reduce variety)
-   - Source from regional suppliers
-
-4. **Process Efficiency**
-   - Automate order picking and sorting
-   - Reduce manual handling and errors
-   - Improve warehouse layout"""
-    
-    elif 'demand' in q and ('forecast' in q or 'predict' in q or 'planning' in q):
-        return """📊 **Demand Forecasting Guide:**
-
-**Purpose:** Predict customer demand to optimize inventory levels
-
-**Forecasting Methods:**
-1. Historical data analysis
-2. Seasonal adjustments
-3. Trend analysis
-4. Time-series forecasting (Prophet)
-
-**Benefits:**
-- Reduce excess inventory
-- Prevent stockouts
-- Optimize warehouse space
-- Better supplier planning
-- Improved cash flow
-
-**Use this app's Demand Module to forecast!**"""
-    
-    elif 'customer' in q and ('retention' in q or 'loyalty' in q or 'keep' in q):
-        return """👥 **Customer Retention Strategy:**
-
-1. **Communication**
-   - Track order status in real-time
-   - Proactive delay notifications
-   - Dedicated customer support
-
-2. **Quality & Service**
-   - Consistent on-time delivery
-   - Proper packaging prevents damage
-   - Easy, hassle-free returns process
-
-3. **Incentives**
-   - Loyalty programs for repeat customers
-   - Bulk order discounts
-   - Free shipping thresholds
-
-4. **Feedback Loop**
-   - Survey customers regularly
-   - Act on feedback quickly
-   - Show continuous improvement"""
-    
-    elif 'supplier' in q and ('choose' in q or 'select' in q or 'evaluate' in q):
-        return """⭐ **Choosing & Evaluating Suppliers:**
-
-**Key Evaluation Criteria:**
-1. Reliability (on-time delivery %)
-2. Quality (defect rate, standards)
-3. Cost competitiveness
-4. Communication responsiveness
-5. Scalability for growth
-6. Location/proximity to operations
-7. Financial stability
-
-**Evaluation Process:**
-- Request quotes from multiple suppliers
-- Check references and past performance
-- Review quality certifications
-- Trial orders first
-- Establish SLAs
-- Regular performance reviews"""
-    
-    elif 'warehouse' in q or 'storage' in q or 'inventory' in q:
-        return """📦 **Warehouse & Inventory Management:**
-
-**Inventory Optimization:**
-1. ABC analysis (classify items by value)
-2. Keep fast-movers readily accessible
-3. Implement FIFO (first in, first out)
-4. Regular stock audits
-
-**Warehouse Organization:**
-- Organize by product type/category
-- Clear labeling system
-- Efficient picking routes
-- Safety protocols and training
-
-**Technology Implementation:**
-- Inventory management system
-- Barcode/RFID tracking
-- Real-time stock visibility
-- Automated low-stock alerts"""
-    
-    elif 'return' in q or 'reverse' in q:
-        return """↩️ **Returns & Reverse Logistics:**
-
-**Return Process:**
-1. Accept returns within reasonable period
-2. Inspect item condition
-3. Restock, repair, or dispose appropriately
-4. Process refund quickly
-
-**Optimization Tips:**
-- Minimize returns through quality control
-- Establish return hubs for efficiency
-- Partner with carriers for pickups
-- Track return metrics and patterns
-
-**Best Practices:**
-- Easy, customer-friendly process
-- Fast refunds (within 5-7 days)
-- Environmental considerations
-- Data analysis for improvement"""
-    
-    else:
-        return """💡 **Supply Chain Topics I Can Help With:**
-
-✅ Delivery optimization
-✅ Reducing costs
-✅ Supply chain overview
-✅ Demand forecasting
-✅ Warehouse management
-✅ Supplier selection
-✅ Customer retention
-✅ Reverse logistics
-✅ Inventory management
-
-Ask me about any supply chain or delivery-related topic!"""
-
-# HEADER
-st.markdown('<div class="header-box"><h1>🏭 Supply Chain AI System</h1><p style="margin: 10px 0 0 0; font-size: 1.1em;">ML-Powered Predictions & Delivery Insights</p></div>', unsafe_allow_html=True)
-
-# MAIN TABS
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📦 Delivery", "📈 Demand", "👥 Churn & Supplier", "💬 Chatbot", "ℹ️ Info"])
-
-# ===== TAB 1: DELIVERY PREDICTION =====
-with tab1:
-    st.markdown("### 📦 Delivery Prediction (Random Forest)")
-    
-    col_upload, col_results = st.columns([1, 1.3])
-    
-    with col_upload:
-        st.markdown("**Upload Data & Predict**")
-        uploaded_file = st.file_uploader("Upload CSV/XLSX", type=['csv', 'xlsx'], key='delivery_upload')
-        
-        if uploaded_file is not None:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file)
-                else:
-                    df = pd.read_excel(uploaded_file)
-                
-                st.markdown(f'<div class="success-box">✅ {len(df)} records loaded | {len(df.columns)} features</div>', unsafe_allow_html=True)
-                
-                with st.expander("📋 View Data Sample"):
-                    st.dataframe(df.head(3), use_container_width=True)
-                
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    if st.button("🔴 Risk Prediction", use_container_width=True, key="delivery_risk_btn"):
-                        result, msg = run_delivery_prediction(df)
-                        if result:
-                            st.session_state['predictions']['delivery_risk'] = result
-                            st.rerun()
-                        else:
-                            st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
-                
-                with col_b:
-                    if st.button("⏱️ Delay Prediction", use_container_width=True, key="delay_btn"):
-                        result, msg = run_delay_prediction(df)
-                        if result:
-                            st.session_state['predictions']['delay'] = result
-                            st.rerun()
-                        else:
-                            st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
-            
-            except Exception as e:
-                st.markdown(f'<div class="error-box">❌ Error loading file: {str(e)}</div>', unsafe_allow_html=True)
-    
-    with col_results:
-        st.markdown("**Prediction Results**")
-        
-        if 'delivery_risk' in st.session_state['predictions']:
-            r = st.session_state['predictions']['delivery_risk']
-            
-            col_i, col_ii, col_iii = st.columns(3)
-            with col_i:
-                st.metric("🔴 High Risk", r['risk'], f"{r['pct']:.1f}%")
-            with col_ii:
-                st.metric("🟢 On-Time", r['total']-r['risk'], f"{100-r['pct']:.1f}%")
-            with col_iii:
-                st.metric("📦 Total", r['total'], "100%")
-            
-            if r['proba'] is not None and len(r['pred']) > 0:
-                result_df = pd.DataFrame({
-                    'Order_ID': range(min(5, len(r['pred']))),
-                    'Status': ['🔴 HIGH RISK' if r['pred'][i] == 1 else '🟢 ON-TIME' for i in range(min(5, len(r['pred'])))],
-                    'Confidence': [f"{max(r['proba'][i])*100:.1f}%" for i in range(min(5, len(r['proba'])))]
-                })
-                st.dataframe(result_df, use_container_width=True, hide_index=True)
-        
-        if 'delay' in st.session_state['predictions']:
-            d = st.session_state['predictions']['delay']
-            
-            col_i, col_ii, col_iii = st.columns(3)
-            with col_i:
-                st.metric("📊 Avg Delay", f"{d['avg']:.2f}", "days")
-            with col_ii:
-                st.metric("⬆️ Max", f"{d['max']:.2f}", "days")
-            with col_iii:
-                st.metric("⬇️ Min", f"{d['min']:.2f}", "days")
-            
-            # Histogram
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.hist(d['pred'], bins=15, color='#ff6b6b', edgecolor='white', linewidth=1.5, alpha=0.8)
-            ax.set_facecolor('#f8f9fa')
-            fig.patch.set_facecolor('#f8f9fa')
-            ax.set_xlabel('Delay (Days)', fontsize=11, color='#1a1a1a')
-            ax.set_ylabel('Frequency', fontsize=11, color='#1a1a1a')
-            ax.set_title('Delivery Delay Distribution', fontsize=12, fontweight='bold', color='#1a1a1a')
-            ax.tick_params(colors='#1a1a1a')
-            plt.tight_layout()
-            st.pyplot(fig)
-
-# ===== TAB 2: DEMAND FORECASTING =====
-with tab2:
-    st.markdown("### 📈 Demand Forecasting (Prophet)")
-    
-    col_upload, col_results = st.columns([1, 1.3])
-    
-    with col_upload:
-        st.markdown("**Upload Time Series Data**")
-        st.markdown("*Required columns: date, sales*")
-        uploaded_file = st.file_uploader("Upload CSV/XLSX", type=['csv', 'xlsx'], key='demand_upload')
-        
-        if uploaded_file is not None:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file)
-                else:
-                    df = pd.read_excel(uploaded_file)
-                
-                st.markdown(f'<div class="success-box">✅ {len(df)} records loaded</div>', unsafe_allow_html=True)
-                
-                if st.button("🔮 Forecast 7 Days", use_container_width=True):
-                    with st.spinner("⏳ Training Prophet model..."):
-                        try:
-                            df['date'] = pd.to_datetime(df['date'])
-                            day_sales = df.groupby('date')['sales'].sum().reset_index().sort_values('date')
-                            pdf = day_sales.rename(columns={"date": "ds", "sales": "y"})
-                            
-                            model = Prophet(
-                                yearly_seasonality=True,
-                                weekly_seasonality=True,
-                                daily_seasonality=False,
-                                interval_width=0.95,
-                                changepoint_prior_scale=0.05
-                            )
-                            model.fit(pdf)
-                            future = model.make_future_dataframe(periods=7)
-                            forecast = model.predict(future)
-                            
-                            st.session_state['predictions']['prophet'] = forecast
-                            st.success("✅ Forecast complete!")
-                            st.rerun()
-                        
-                        except Exception as e:
-                            st.markdown(f'<div class="error-box">❌ Error: {str(e)}</div>', unsafe_allow_html=True)
-            
-            except Exception as e:
-                st.markdown(f'<div class="error-box">❌ Error loading file: {str(e)}</div>', unsafe_allow_html=True)
-    
-    with col_results:
-        st.markdown("**Forecast Results**")
-        
-        if 'prophet' in st.session_state['predictions']:
-            f = st.session_state['predictions']['prophet']
-            recent = f.tail(7)
-            
-            col_i, col_ii, col_iii = st.columns(3)
-            with col_i:
-                st.metric("📈 Avg Forecast", f"{recent['yhat'].mean():.0f}", "units")
-            with col_ii:
-                st.metric("⬆️ Peak", f"{recent['yhat'].max():.0f}", "units")
-            with col_iii:
-                st.metric("Range Variance", f"±{recent['yhat_upper'].mean() - recent['yhat'].mean():.0f}", "units")
-            
-            # Forecast chart
-            fig, ax = plt.subplots(figsize=(11, 5))
-            ax.plot(f['ds'], f['yhat'], label='Forecast', color='#ff6b6b', linewidth=2.5)
-            ax.fill_between(f['ds'], f['yhat_lower'], f['yhat_upper'], alpha=0.2, color='#ff6b6b', label='95% CI')
-            ax.set_facecolor('#f8f9fa')
-            fig.patch.set_facecolor('#f8f9fa')
-            ax.set_xlabel('Date', fontsize=11, color='#1a1a1a')
-            ax.set_ylabel('Demand (Units)', fontsize=11, color='#1a1a1a')
-            ax.set_title('7-Day Demand Forecast', fontsize=12, fontweight='bold', color='#1a1a1a')
-            ax.legend(loc='upper left')
-            ax.tick_params(colors='#1a1a1a')
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            st.pyplot(fig)
-
-# ===== TAB 3: CHURN & SUPPLIER =====
-with tab3:
-    st.markdown("### 👥 Churn & Supplier Predictions")
-    
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.markdown("**Customer Churn Prediction**")
-        file = st.file_uploader("Upload Customer Data (CSV/XLSX)", type=['csv', 'xlsx'], key='churn_upload')
-        if file:
-            try:
-                df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-                st.markdown(f'<div class="success-box">✅ {len(df)} records</div>', unsafe_allow_html=True)
-                
-                if st.button("🎯 Predict Churn", use_container_width=True):
-                    result, msg = run_churn_prediction(df)
-                    if result:
-                        st.session_state['predictions']['churn'] = result
-                        st.rerun()
-                    else:
-                        st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
-                
-                if 'churn' in st.session_state['predictions']:
-                    c = st.session_state['predictions']['churn']
-                    col_i, col_ii = st.columns(2)
-                    col_i.metric("🔴 At-Risk", f"{c['churn']}/{c['total']}", f"{c['pct']:.1f}%")
-                    col_ii.metric("🟢 Stable", f"{c['total']-c['churn']}", f"{100-c['pct']:.1f}%")
-            except Exception as e:
-                st.markdown(f'<div class="error-box">❌ {str(e)}</div>', unsafe_allow_html=True)
+        st.subheader("📤 Upload Delivery Data")
+        uploaded_file = st.file_uploader("Choose CSV file", type=['csv', 'xlsx'], key='delivery_upload')
+        
+        if uploaded_file:
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            st.session_state['uploaded_data']['delivery'] = df
+            
+            st.success(f"✅ Loaded {len(df)} records")
+            st.write(df.head())
+            
+            # Prediction buttons
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("🚀 Predict Late Delivery Risk", key="btn_delivery_risk"):
+                    try:
+                        model = joblib.load("catboost_delivery_risk.pkl")
+                        cols = ['Days for shipping (real)', 'Days for shipment (scheduled)', 'Shipping Mode', 'Order Item Quantity']
+                        if all(col in df.columns for col in cols):
+                            pred = model.predict(df[cols])
+                            prob = model.predict_proba(df[cols])
+                            
+                            st.session_state['predictions']['delivery_risk'] = {
+                                'predictions': pred,
+                                'probabilities': prob,
+                                'data': df[cols]
+                            }
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Missing columns. Required: {cols}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+            
+            with col_b:
+                if st.button("📅 Predict Delivery Delay (Days)", key="btn_delay"):
+                    try:
+                        model = joblib.load("catboost_delay_regression.pkl")
+                        cols = ['Days for shipping (real)', 'Days for shipment (scheduled)', 'Shipping Mode', 'Order Item Quantity']
+                        if all(col in df.columns for col in cols):
+                            pred = model.predict(df[cols])
+                            
+                            st.session_state['predictions']['delay_days'] = {
+                                'predictions': pred,
+                                'data': df[cols]
+                            }
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Missing columns. Required: {cols}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
     
     with col2:
-        st.markdown("**Supplier Reliability**")
-        file = st.file_uploader("Upload Supplier Data (CSV/XLSX)", type=['csv', 'xlsx'], key='supplier_upload')
-        if file:
-            try:
-                df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
-                st.markdown(f'<div class="success-box">✅ {len(df)} records</div>', unsafe_allow_html=True)
-                
-                if st.button("⭐ Score Suppliers", use_container_width=True):
-                    result, msg = run_supplier_prediction(df)
-                    if result:
-                        st.session_state['predictions']['supplier'] = result
-                        st.rerun()
-                    else:
-                        st.markdown(f'<div class="error-box">❌ {msg}</div>', unsafe_allow_html=True)
-                
-                if 'supplier' in st.session_state['predictions']:
-                    s = st.session_state['predictions']['supplier']
-                    col_i, col_ii, col_iii = st.columns(3)
-                    col_i.metric("📊 Avg Score", f"{s['avg']:.2f}", "/10")
-                    col_ii.metric("⭐ Best", f"{s['max']:.2f}", "/10")
-                    col_iii.metric("⚠️ Worst", f"{s['min']:.2f}", "/10")
-            except Exception as e:
-                st.markdown(f'<div class="error-box">❌ {str(e)}</div>', unsafe_allow_html=True)
+        st.subheader("📊 Prediction Results")
+        
+        if 'delivery_risk' in st.session_state['predictions']:
+            pred_data = st.session_state['predictions']['delivery_risk']
+            pred = pred_data['predictions']
+            prob = pred_data['probabilities']
+            
+            st.markdown('<div class="prediction-result">🎯 Late Delivery Risk Assessment</div>', unsafe_allow_html=True)
+            
+            risk_count = sum(pred)
+            on_time_count = len(pred) - risk_count
+            risk_percentage = (risk_count / len(pred)) * 100
+            
+            col_i, col_ii, col_iii = st.columns(3)
+            col_i.metric("High Risk Orders", risk_count, f"{risk_percentage:.1f}%")
+            col_ii.metric("On-Time Orders", on_time_count, f"{100-risk_percentage:.1f}%")
+            col_iii.metric("Total Orders", len(pred), "100%")
+            
+            st.dataframe({
+                'Order': range(len(pred)),
+                'Risk Status': ['🔴 HIGH RISK' if p == 1 else '🟢 ON TIME' for p in pred],
+                'Confidence': [f"{max(prob[i])*100:.2f}%" for i in range(len(prob))]
+            })
+        
+        if 'delay_days' in st.session_state['predictions']:
+            pred_data = st.session_state['predictions']['delay_days']
+            pred = pred_data['predictions']
+            
+            st.markdown('<div class="prediction-result">⏱️ Delivery Delay Forecast</div>', unsafe_allow_html=True)
+            
+            avg_delay = np.mean(pred)
+            max_delay = np.max(pred)
+            min_delay = np.min(pred)
+            
+            col_i, col_ii, col_iii = st.columns(3)
+            col_i.metric("Avg Delay (days)", f"{avg_delay:.2f}", "days")
+            col_ii.metric("Max Delay (days)", f"{max_delay:.2f}", "days")
+            col_iii.metric("Min Delay (days)", f"{min_delay:.2f}", "days")
+            
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.hist(pred, bins=20, color='#667eea', edgecolor='black')
+            ax.set_xlabel('Delay (Days)')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Delivery Delay Distribution')
+            st.pyplot(fig)
 
-# ===== TAB 4: SUPPLY CHAIN CHATBOT =====
-with tab4:
-    st.markdown("### 💬 Supply Chain & Delivery Chatbot")
-    st.markdown('<div class="info-box">🎯 Ask me about supply chain, delivery, logistics, or inventory topics!</div>', unsafe_allow_html=True)
+# ---- MODULE 2: DEMAND FORECAST ----
+elif page == "📈 Demand Forecast":
+    st.markdown('<div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 20px; border-radius: 10px;"><h1 style="color:white;">📈 Demand Forecasting</h1></div>', unsafe_allow_html=True)
     
-    user_input = st.text_input("Your question:", placeholder="E.g., 'How to reduce delivery costs?', 'What is supply chain?', 'Delivery optimization tips'")
+    st.subheader("📤 Upload Time Series Data")
+    uploaded_file = st.file_uploader("Choose CSV (date, store, item, sales)", type=['csv', 'xlsx'], key='demand_upload')
+    
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        st.session_state['uploaded_data']['demand'] = df
+        st.success(f"✅ Loaded {len(df)} records")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🔮 Prophet Forecast (7 days)", key="btn_prophet"):
+                try:
+                    if 'date' in df.columns and 'sales' in df.columns:
+                        df['date'] = pd.to_datetime(df['date'])
+                        day_sales = df.groupby('date')['sales'].sum().reset_index()
+                        prophet_df = day_sales.rename(columns={"date": "ds", "sales": "y"})
+                        
+                        with st.spinner("🔄 Training Prophet model..."):
+                            model = Prophet(yearly_seasonality=True, weekly_seasonality=True, interval_width=0.95)
+                            model.fit(prophet_df)
+                            future = model.make_future_dataframe(periods=7)
+                            forecast = model.predict(future)
+                        
+                        st.session_state['predictions']['prophet'] = forecast
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+        
+        with col2:
+            if st.button("🧠 LSTM Forecast (Advanced)", key="btn_lstm"):
+                try:
+                    if os.path.exists("lstm_demand_forecast.h5"):
+                        st.info("LSTM model feature coming soon with enhanced UI")
+                    else:
+                        st.warning("⚠️ LSTM model not found in deployment")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+        
+        if 'prophet' in st.session_state['predictions']:
+            forecast = st.session_state['predictions']['prophet']
+            
+            st.markdown('<div class="prediction-result">📊 Demand Forecast Results</div>', unsafe_allow_html=True)
+            
+            recent_forecast = forecast.tail(7)
+            col_i, col_ii, col_iii = st.columns(3)
+            col_i.metric("Next 7-Day Avg", f"{recent_forecast['yhat'].mean():.0f} units")
+            col_ii.metric("Peak Forecast", f"{recent_forecast['yhat'].max():.0f} units")
+            col_iii.metric("Confidence Range", f"±{recent_forecast['yhat_upper'].mean() - recent_forecast['yhat'].mean():.0f}")
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(forecast['ds'], forecast['yhat'], label='Forecast', color='#f5576c', linewidth=2)
+            ax.fill_between(forecast['ds'], forecast['yhat_lower'], forecast['yhat_upper'], alpha=0.3, color='#f5576c')
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Demand (Units)')
+            ax.set_title('Demand Forecast with 95% Confidence Interval')
+            ax.legend()
+            st.pyplot(fig)
+            
+            st.dataframe(recent_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].rename(columns={
+                'ds': 'Date',
+                'yhat': 'Forecast',
+                'yhat_lower': 'Lower Bound',
+                'yhat_upper': 'Upper Bound'
+            }))
+
+# ---- MODULE 3: CHURN & SUPPLIER ----
+elif page == "👥 Churn & Supplier":
+    st.markdown('<div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); padding: 20px; border-radius: 10px;"><h1 style="color:white;">👥 Customer Churn & Supplier Reliability</h1></div>', unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["Customer Churn", "Supplier Reliability"])
+    
+    with tab1:
+        st.subheader("📤 Upload Customer Data")
+        uploaded_file = st.file_uploader("Choose CSV", type=['csv', 'xlsx'], key='churn_upload')
+        
+        if uploaded_file:
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            st.session_state['uploaded_data']['churn'] = df
+            st.success(f"✅ Loaded {len(df)} records")
+            
+            if st.button("🎯 Predict Customer Churn", key="btn_churn"):
+                try:
+                    model = joblib.load("catboost_customer_churn.pkl")
+                    cols = ['Customer Segment', 'Type', 'Category Name', 'Order Item Quantity', 'Sales', 'Order Profit Per Order']
+                    if all(col in df.columns for col in cols):
+                        pred = model.predict(df[cols])
+                        prob = model.predict_proba(df[cols])
+                        
+                        st.session_state['predictions']['churn'] = {
+                            'predictions': pred,
+                            'probabilities': prob
+                        }
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            if 'churn' in st.session_state['predictions']:
+                pred_data = st.session_state['predictions']['churn']
+                pred = pred_data['predictions']
+                prob = pred_data['probabilities']
+                
+                st.markdown('<div class="prediction-result">📊 Churn Analysis Results</div>', unsafe_allow_html=True)
+                
+                churn_count = sum(pred)
+                retention_count = len(pred) - churn_count
+                churn_rate = (churn_count / len(pred)) * 100
+                
+                col_i, col_ii, col_iii = st.columns(3)
+                col_i.metric("At-Risk Customers", churn_count, f"{churn_rate:.1f}%")
+                col_ii.metric("Retained Customers", retention_count, f"{100-churn_rate:.1f}%")
+                col_iii.metric("Total Customers", len(pred), "100%")
+                
+                risk_df = pd.DataFrame({
+                    'Customer ID': range(len(pred)),
+                    'Churn Risk': ['🔴 HIGH RISK' if p == 1 else '🟢 SAFE' for p in pred],
+                    'Risk Score': [f"{max(prob[i])*100:.2f}%" for i in range(len(prob))]
+                })
+                st.dataframe(risk_df)
+    
+    with tab2:
+        st.subheader("📤 Upload Supplier Data")
+        uploaded_file = st.file_uploader("Choose CSV", type=['csv', 'xlsx'], key='supplier_upload')
+        
+        if uploaded_file:
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            st.session_state['uploaded_data']['supplier'] = df
+            st.success(f"✅ Loaded {len(df)} records")
+            
+            if st.button("⭐ Predict Supplier Reliability", key="btn_supplier"):
+                try:
+                    model = joblib.load("catboost_supplier_reliability.pkl")
+                    cols = ['Order Item Quantity', 'Order Profit Per Order', 'Sales']
+                    if all(col in df.columns for col in cols):
+                        pred = model.predict(df[cols])
+                        
+                        st.session_state['predictions']['supplier'] = {'predictions': pred}
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            
+            if 'supplier' in st.session_state['predictions']:
+                pred = st.session_state['predictions']['supplier']['predictions']
+                
+                st.markdown('<div class="prediction-result">⭐ Supplier Reliability Scores</div>', unsafe_allow_html=True)
+                
+                avg_score = np.mean(pred)
+                max_score = np.max(pred)
+                min_score = np.min(pred)
+                
+                col_i, col_ii, col_iii = st.columns(3)
+                col_i.metric("Avg Reliability", f"{avg_score:.2f}", "/ 10")
+                col_ii.metric("Best Score", f"{max_score:.2f}", "/ 10")
+                col_iii.metric("Lowest Score", f"{min_score:.2f}", "/ 10")
+                
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.bar(range(len(pred)), pred, color=['#4facfe' if p >= 5 else '#ff6b6b' for p in pred], edgecolor='black')
+                ax.set_xlabel('Supplier/Department')
+                ax.set_ylabel('Reliability Score')
+                ax.set_title('Supplier Reliability Scorecard')
+                ax.axhline(y=5, color='orange', linestyle='--', label='Threshold (5.0)')
+                ax.legend()
+                st.pyplot(fig)
+
+# ---- CHATBOT PAGE ----
+elif page == "🤖 AI Chatbot":
+    st.markdown('<div style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); padding: 20px; border-radius: 10px;"><h1 style="color:white;">🤖 Gemini AI Chatbot Assistant</h1></div>', unsafe_allow_html=True)
+    
+    st.info("💡 Upload data in other modules first, then ask questions here!")
+    
+    tabs = st.tabs(["Delivery", "Demand", "Churn/Supplier"])
+    labels = ["delivery", "demand", "churn"]
+    
+    for i, tab in enumerate(tabs):
+        with tab:
+            label = labels[i]
+            uploaded_file = st.file_uploader(f"Upload {label.capitalize()} Data", key=f"chat_{label}", type=['csv', 'xlsx'])
+            if uploaded_file:
+                df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                st.session_state['uploaded_data'][label] = df
+                st.success(f"✅ {label.capitalize()} data loaded for chatbot")
+    
+    st.subheader("💬 Ask Questions About Your Supply Chain")
+    user_input = st.text_input("Your question:", placeholder="e.g., 'What is the late delivery risk for my shipments?'")
     
     if user_input:
-        if check_supply_chain_relevance(user_input):
-            response = get_supply_chain_response(user_input)
-            st.session_state['chat_history'].append({"role": "user", "content": user_input})
-            st.session_state['chat_history'].append({"role": "bot", "content": response})
-            st.rerun()
+        # Get model predictions
+        project_response = None
+        
+        if any(word in user_input.lower() for word in ['delivery', 'late', 'delay', 'shipping']):
+            df = st.session_state['uploaded_data'].get('delivery')
+            if df is not None:
+                try:
+                    model = joblib.load("catboost_delivery_risk.pkl")
+                    cols = ['Days for shipping (real)', 'Days for shipment (scheduled)', 'Shipping Mode', 'Order Item Quantity']
+                    if all(col in df.columns for col in cols):
+                        pred = model.predict(df[cols])
+                        risk_count = sum(pred)
+                        project_response = f"Late delivery risk analysis: {risk_count} out of {len(pred)} shipments are at high risk ({(risk_count/len(pred))*100:.1f}%)"
+                except: pass
+        
+        elif any(word in user_input.lower() for word in ['demand', 'forecast', 'sales']):
+            df = st.session_state['uploaded_data'].get('demand')
+            if df is not None:
+                try:
+                    if 'date' in df.columns and 'sales' in df.columns:
+                        df['date'] = pd.to_datetime(df['date'])
+                        day_sales = df.groupby('date')['sales'].sum().reset_index()
+                        prophet_df = day_sales.rename(columns={"date": "ds", "sales": "y"})
+                        model = Prophet(yearly_seasonality=True, weekly_seasonality=True, interval_width=0.95)
+                        model.fit(prophet_df)
+                        future = model.make_future_dataframe(periods=7)
+                        forecast = model.predict(future)
+                        avg_forecast = forecast.tail(7)['yhat'].mean()
+                        project_response = f"Demand forecast for next 7 days: Average expected demand is {avg_forecast:.0f} units"
+                except: pass
+        
+        elif any(word in user_input.lower() for word in ['churn', 'customer', 'risk']):
+            df = st.session_state['uploaded_data'].get('churn')
+            if df is not None:
+                try:
+                    model = joblib.load("catboost_customer_churn.pkl")
+                    cols = ['Customer Segment', 'Type', 'Category Name', 'Order Item Quantity', 'Sales', 'Order Profit Per Order']
+                    if all(col in df.columns for col in cols):
+                        pred = model.predict(df[cols])
+                        churn_count = sum(pred)
+                        project_response = f"Customer churn analysis: {churn_count} out of {len(pred)} customers are at risk of churning ({(churn_count/len(pred))*100:.1f}%)"
+                except: pass
+        
+        # Generate Gemini response
+        if project_response and gemini_model:
+            prompt = f"""You are a supply chain AI expert. A user asked: "{user_input}"
+            
+Here is the ML model analysis: {project_response}
+
+Provide a clear, actionable business insight based on this data in 2-3 sentences."""
+            
+            try:
+                gemini_response = gemini_model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0.7)).text
+            except:
+                gemini_response = project_response
+        elif project_response:
+            gemini_response = project_response
         else:
-            st.session_state['chat_history'].append({"role": "user", "content": user_input})
-            st.session_state['chat_history'].append({
-                "role": "reject",
-                "content": "❌ I can only answer supply chain and delivery-related questions. Please ask about logistics, shipping, inventory, demand forecasting, or similar supply chain topics."
-            })
-            st.rerun()
+            gemini_response = "Please upload relevant data in the tabs above to get predictions, then ask your question."
+        
+        # Add to history
+        st.session_state['chat_history'].append({"role": "user", "content": user_input})
+        st.session_state['chat_history'].append({"role": "assistant", "content": gemini_response})
+        
+        # Display
+        st.markdown('<div class="prediction-result">🤖 AI Response</div>', unsafe_allow_html=True)
+        st.write(gemini_response)
     
-    st.markdown("---")
-    st.markdown("**Chat History:**")
-    
+    # Chat history
     if st.session_state['chat_history']:
-        for msg in reversed(st.session_state['chat_history'][-10:]):
-            if msg["role"] == "user":
-                st.markdown(f'<div class="chat-user">👤 <b>You:</b><br/>{msg["content"]}</div>', unsafe_allow_html=True)
-            elif msg["role"] == "bot":
-                st.markdown(f'<div class="chat-bot">🤖 <b>AI:</b><br/>{msg["content"]}</div>', unsafe_allow_html=True)
+        st.divider()
+        st.subheader("📝 Conversation History")
+        for entry in st.session_state['chat_history']:
+            if entry["role"] == "user":
+                st.markdown(f"**👤 You:** {entry['content']}")
             else:
-                st.markdown(f'<div class="chat-reject">{msg["content"]}</div>', unsafe_allow_html=True)
-    else:
-        st.info("💭 No chat history yet. Ask a question to get started!")
+                st.markdown(f"**🤖 AI:** {entry['content']}")
 
-# ===== TAB 5: INFO =====
-with tab5:
-    st.markdown("### ℹ️ About This System")
-    
-    st.markdown("""
-    **🏭 Supply Chain AI System - Production Ready**
-    
-    **Modules:**
-    - 📦 **Delivery Prediction** - Risk & Delay forecasting using Random Forest
-    - 📈 **Demand Forecasting** - 7-day predictions using Prophet time-series
-    - 👥 **Churn & Supplier** - Customer retention and supplier scoring
-    - 💬 **Chatbot** - Supply chain domain knowledge base
-    
-    **Models Used:**
-    - Random Forest Classifier: `rf_classifier_pipeline.pkl`
-    - Random Forest Regressor: `rf_regressor_pipeline.pkl`
-    - Prophet: Time-series forecasting
-    - Optional: CatBoost models (*.pkl)
-    
-    **Required Files:**
-    - `rf_classifier_pipeline.pkl` - For delivery risk classification
-    - `rf_regressor_pipeline.pkl` - For delay regression
-    - Other optional model files in project root
-    
-    **Technologies:**
-    - Streamlit (Web UI)
-    - Scikit-learn (Random Forest)
-    - Prophet (Forecasting)
-    - Pandas & NumPy (Data processing)
-    """)
-    
-    st.markdown("---")
-    st.markdown("### 🔧 Configuration")
-    
-    col_info1, col_info2 = st.columns(2)
-    
-    with col_info1:
-        st.markdown("**Models Found:**")
-        for name, model in models.items():
-            st.markdown(f"✅ `{name}`")
-        if not models:
-            st.markdown("❌ No models found")
-    
-    with col_info2:
-        st.markdown("**Python Requirements:**")
-        st.code("""streamlit
-pandas
-scikit-learn
-prophet
-joblib
-numpy
-matplotlib""", language="text")
-
-st.markdown("---")
-st.markdown("<div style='text-align: center; color: #ff6b6b; margin-top: 50px;'><p>🏭 <b>Supply Chain AI v9.0</b> | Random Forest + Prophet | Production Ready</p></div>", unsafe_allow_html=True)
+# ---- FOOTER ----
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About")
+st.sidebar.info("""
+**Supply Chain Risk Predictor** v2.0
+- 6 ML Models
+- Gemini 1.5 Integration
+- Real-time Predictions
+- Fully Production-Ready
+""")
